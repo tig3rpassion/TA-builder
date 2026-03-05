@@ -181,6 +181,27 @@ body {
   color: var(--text);
 }
 
+/* ===== 불러오기 구분선 ===== */
+.load-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.load-divider::before,
+.load-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.btn-load {
+  width: 100%;
+  text-align: center;
+}
+
 /* ===== 생성 상태 ===== */
 .generate-status {
   display: flex;

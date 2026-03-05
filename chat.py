@@ -11,15 +11,12 @@ from typing import AsyncGenerator, Optional
 from key_manager import key_manager
 
 KOREAN_ONLY_RULE = (
-    "CRITICAL: You MUST respond ONLY in Korean (한국어) and English technical terms. "
-    "NEVER use any other language. Forbidden examples: "
-    "Spanish: importante, necesario, ademas; "
-    "Turkish: yasal, gerekli; "
-    "German: erklären, untersuchen, wichtig, jedoch; "
-    "Russian: простран, области; "
-    "French, Italian, Arabic — all forbidden. "
-    "If you are about to write a non-Korean/non-English word, replace it with Korean immediately. "
-    "Technical terms: 한국어(English) side by side, e.g. 좌표계(CRS).\n\n"
+    "ABSOLUTE RULE — LANGUAGE: 모든 응답은 반드시 한국어로만 작성하세요. "
+    "You MUST write EVERY sentence in Korean. "
+    "Do NOT use English sentences, Spanish, French, German, Turkish, Arabic, Russian, or any other language. "
+    "ONLY exception: technical/domain terms may appear as 한국어(English), e.g. 회귀분석(regression). "
+    "If you notice yourself writing a non-Korean sentence, stop immediately and rewrite it in Korean. "
+    "한국어로 답하지 않으면 실패입니다.\n\n"
 )
 
 
@@ -53,14 +50,30 @@ MAX_HISTORY = 20
 sessions: dict[str, dict] = {}
 
 
-def create_session(agents: list[dict]) -> str:
+def create_session(agents: list[dict], pdf_texts: list[str] = None) -> str:
     """새 세션 생성, session_id 반환"""
     session_id = str(uuid.uuid4())
     sessions[session_id] = {
         "agents": agents,
         "conversations": {a["id"]: [] for a in agents},
+        "pdf_texts": pdf_texts or [],
     }
     return session_id
+
+
+def get_session_pdf_texts(session_id: str) -> list[str]:
+    session = sessions.get(session_id)
+    if not session:
+        return []
+    return session.get("pdf_texts", [])
+
+
+def append_pdf_texts(session_id: str, new_texts: list[str]) -> bool:
+    session = sessions.get(session_id)
+    if not session:
+        return False
+    session.setdefault("pdf_texts", []).extend(new_texts)
+    return True
 
 
 def get_session(session_id: str) -> Optional[dict]:
@@ -114,7 +127,9 @@ async def stream_chat(
         session["conversations"][agent_id] = history[-MAX_HISTORY:]
         history = session["conversations"][agent_id]
 
-    messages = [{"role": "system", "content": _build_system_prompt(agent)}] + history
+    # API 호출 시 마지막 유저 메시지에 한국어 리마인더 삽입 (저장본은 원본 유지)
+    api_history = history[:-1] + [{"role": "user", "content": f"[반드시 한국어로만 답하시오]\n{user_message}"}]
+    messages = [{"role": "system", "content": _build_system_prompt(agent)}] + api_history
 
     raw_chunks: list[str] = []
     key_count = key_manager.count
@@ -130,7 +145,7 @@ async def stream_chat(
                 stream=True,
             )
             async for chunk in stream:
-                text = _strip_non_korean(chunk.choices[0].delta.content or "")
+                text = chunk.choices[0].delta.content or ""
                 raw_chunks.append(text)
                 yield text
             break

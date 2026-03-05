@@ -35,6 +35,13 @@
           <div class="spinner"></div>
           <span id="generate-status-text">PDF 분석 중...</span>
         </div>
+
+        <div class="load-divider"><span>또는</span></div>
+
+        <button id="load-agents-btn" class="btn-secondary btn-load">
+          저장된 에이전트 불러오기
+        </button>
+        <input type="file" id="load-agents-input" accept=".json" hidden />
       </div>
     </div>
 
@@ -51,6 +58,7 @@
 
         <div class="preview-actions">
           <button id="back-btn" class="btn-secondary">← 다시 업로드</button>
+          <button id="save-agents-btn" class="btn-secondary">에이전트 저장</button>
           <button id="start-btn" class="btn-primary">채팅 시작하기 →</button>
         </div>
       </div>
@@ -69,6 +77,8 @@
             </div>
           </div>
           <div class="header-right">
+            <button id="add-material-btn" class="btn-clear">자료 추가</button>
+            <input type="file" id="add-material-input" accept=".pdf" multiple hidden />
             <button id="clear-btn" class="btn-clear hidden">대화 초기화</button>
             <button id="reset-btn" class="btn-reset">← 처음으로</button>
           </div>

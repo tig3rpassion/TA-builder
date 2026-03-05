@@ -15,10 +15,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from chat import (
+    append_pdf_texts,
     clear_history,
     create_session,
     get_history_length,
     get_session,
+    get_session_pdf_texts,
     stream_chat,
     update_session_agents,
 )
@@ -61,9 +63,63 @@ async def generate(files: List[UploadFile] = File(...)):
         raise HTTPException(status_code=400, detail="PDF에서 텍스트를 추출할 수 없습니다.")
 
     agents = await generate_agents(pdf_texts)
-    session_id = create_session(agents)
+    session_id = create_session(agents, pdf_texts)
 
     return {"session_id": session_id, "agents": agents}
+
+
+# ─── 에이전트 저장/불러오기 ──────────────────────────────────────────────────
+
+@app.get("/agents/{session_id}/export")
+async def export_agents(session_id: str):
+    """에이전트 정의를 JSON으로 내보내기"""
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    return {"agents": session["agents"]}
+
+
+class ImportRequest(BaseModel):
+    agents: list[dict]
+
+
+@app.post("/agents/import")
+async def import_agents(req: ImportRequest):
+    """저장된 에이전트 JSON을 불러와 새 세션 생성"""
+    if not req.agents:
+        raise HTTPException(status_code=400, detail="에이전트 정보가 없습니다.")
+    session_id = create_session(req.agents)
+    return {"session_id": session_id, "agents": req.agents}
+
+
+# ─── 자료 추가 ────────────────────────────────────────────────────────────────
+
+@app.post("/add-material/{session_id}")
+async def add_material(session_id: str, files: List[UploadFile] = File(...)):
+    """기존 세션에 PDF 자료를 추가하고 에이전트를 재생성"""
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+
+    new_texts = []
+    for file in files:
+        if not file.filename.lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail=f"{file.filename}: PDF 파일만 지원합니다.")
+        content = await file.read()
+        text = extract_text_from_pdf(content)
+        if text.strip():
+            new_texts.append(text)
+
+    if not new_texts:
+        raise HTTPException(status_code=400, detail="PDF에서 텍스트를 추출할 수 없습니다.")
+
+    append_pdf_texts(session_id, new_texts)
+    all_texts = get_session_pdf_texts(session_id)
+
+    new_agents = await generate_agents(all_texts)
+    update_session_agents(session_id, new_agents)
+
+    return {"session_id": session_id, "agents": new_agents}
 
 
 # ─── 세션 에이전트 관리 ───────────────────────────────────────────────────────

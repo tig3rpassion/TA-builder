@@ -152,6 +152,8 @@ function showPreview() {
     showStep("upload");
   }, { once: true });
 
+  document.getElementById("save-agents-btn").addEventListener("click", saveAgents);
+
   document.getElementById("start-btn").addEventListener("click", async () => {
     await saveAgentEdits();
     initChat();
@@ -232,6 +234,7 @@ function initChat() {
   document.getElementById("send-btn").onclick = sendMessage;
   document.getElementById("clear-btn").onclick = clearConversation;
   document.getElementById("reset-btn").onclick = resetToUpload;
+  initAddMaterial();
 
   const input = document.getElementById("message-input");
   input.onkeydown = (e) => {
@@ -499,6 +502,111 @@ function escapeHtml(text) {
     .replace(/'/g, "&#39;");
 }
 
+// ─── 에이전트 저장 ─────────────────────────────────────────────────────────────
+function saveAgents() {
+  const data = JSON.stringify({ agents }, null, 2);
+  const blob = new Blob([data], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "ta-agents.json";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ─── 에이전트 불러오기 ─────────────────────────────────────────────────────────
+function initLoadAgents() {
+  const btn = document.getElementById("load-agents-btn");
+  const input = document.getElementById("load-agents-input");
+
+  btn.addEventListener("click", () => input.click());
+
+  input.addEventListener("change", async () => {
+    const file = input.files[0];
+    if (!file) return;
+    input.value = "";
+
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!data.agents || !Array.isArray(data.agents)) throw new Error("올바른 형식이 아닙니다.");
+
+      const res = await fetch("/agents/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agents: data.agents }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "불러오기 실패");
+      }
+      const result = await res.json();
+      sessionId = result.session_id;
+      agents = result.agents;
+      showPreview();
+    } catch (err) {
+      alert(`불러오기 오류: ${err.message}`);
+    }
+  });
+}
+
+// ─── 자료 추가 ─────────────────────────────────────────────────────────────────
+function initAddMaterial() {
+  const btn = document.getElementById("add-material-btn");
+  const input = document.getElementById("add-material-input");
+
+  btn.addEventListener("click", () => input.click());
+
+  input.addEventListener("change", async () => {
+    const files = Array.from(input.files);
+    if (!files.length) return;
+    input.value = "";
+
+    btn.disabled = true;
+    btn.textContent = "자료 추가 중...";
+
+    const formData = new FormData();
+    for (const f of files) formData.append("files", f);
+
+    try {
+      const res = await fetch(`/add-material/${sessionId}`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "자료 추가 실패");
+      }
+      const result = await res.json();
+      agents = result.agents;
+
+      // 에이전트 셀렉터 갱신, 대화 초기화
+      selectedAgentId = null;
+      currentAgentInChat = null;
+      renderAgentSelector();
+      const chatMessages = document.getElementById("chat-messages");
+      chatMessages.innerHTML = `
+        <div class="welcome-screen" id="welcome-screen">
+          <div class="welcome-icon">📚</div>
+          <h2>자료가 추가되었습니다</h2>
+          <p>에이전트가 새 자료를 반영하여 재생성되었습니다.<br>에이전트를 다시 선택해 주세요.</p>
+          <div class="agent-hints" id="agent-hints"></div>
+        </div>
+      `;
+      renderAgentHints();
+      document.getElementById("clear-btn").classList.add("hidden");
+      document.getElementById("message-input").disabled = true;
+      document.getElementById("send-btn").disabled = true;
+    } catch (err) {
+      alert(`오류: ${err.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "자료 추가";
+    }
+  });
+}
+
 // ─── 시작 ─────────────────────────────────────────────────────────────────────
 showStep("upload");
 initUpload();
+initLoadAgents();
