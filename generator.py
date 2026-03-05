@@ -1,18 +1,19 @@
 """
 PDF 분석 + 에이전트 자동 생성 모듈
-pypdf로 텍스트 추출 → Groq LLM으로 2~4개 에이전트 정의 생성
+PyMuPDF로 텍스트/이미지 추출 → Gemini LLM으로 2~4개 에이전트 정의 생성
 """
 
+import asyncio
 import json
 import re
 from io import BytesIO
 
+import fitz  # PyMuPDF
 from fastapi import HTTPException
-from pypdf import PdfReader
+from google.genai import types
 
-from key_manager import key_manager
-
-MODEL = "qwen/qwen3-32b"
+from gemini_client import MODEL, get_client
+from retriever import PageData
 
 # 에이전트 아바타/색상 풀
 AVATAR_POOL = ["📚", "🔬", "💡", "🗺️", "📊", "🏛️", "🧑‍💻", "🎯", "📝", "🔍"]
@@ -28,16 +29,35 @@ COLOR_POOL = [
 ]
 
 
-def extract_text_from_pdf(file_bytes: bytes, filename: str = "") -> str:
-    """PDF 바이트에서 텍스트 추출. 페이지마다 [파일명, p.N] 헤더를 붙여 반환."""
-    reader = PdfReader(BytesIO(file_bytes))
+def extract_pdf_pages(file_bytes: bytes, filename: str = "") -> list[PageData]:
+    """PDF 바이트에서 페이지별 PageData 리스트 추출"""
     label = filename or "첨부파일"
-    parts = []
-    for i, page in enumerate(reader.pages, 1):
-        t = page.extract_text() or ""
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    pages = []
+    for i, page in enumerate(doc):
+        t = page.get_text() or ""
         if t.strip():
-            parts.append(f"[{label}, p.{i}]\n{t}")
-    return "\n\n".join(parts)[:16000]
+            source = f"{label}, p.{i + 1}"
+            text = f"[{source}]\n{t}"
+            pages.append(PageData(
+                text=text,
+                source=source,
+                page_num=i,
+                filename=label,
+            ))
+    doc.close()
+    return pages
+
+
+def extract_page_image(pdf_bytes: bytes, page_num: int, dpi: int = 150) -> bytes:
+    """PDF의 특정 페이지(0-based)를 JPEG 이미지 바이트로 반환"""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc[page_num]
+    mat = fitz.Matrix(dpi / 72, dpi / 72)
+    pix = page.get_pixmap(matrix=mat)
+    img_bytes = pix.tobytes("jpeg")
+    doc.close()
+    return img_bytes
 
 
 _SYSTEM_PROMPT_FOR_GENERATOR = """\
@@ -77,59 +97,57 @@ _SYSTEM_PROMPT_FOR_GENERATOR = """\
 """
 
 
-async def generate_agents(pdf_texts: list[str]) -> list[dict]:
+async def generate_agents(pdf_pages: list[PageData]) -> list[dict]:
     """
-    PDF 텍스트 목록을 분석하여 2~4개 에이전트 정의 반환
+    PDF 페이지 목록을 분석하여 2~4개 에이전트 정의 반환
     반환: [{"id", "name", "role", "avatar", "color", "description", "system_prompt"}, ...]
     """
-    combined = "\n\n---\n\n".join(pdf_texts)
-    # 전체 합산도 8000자로 제한
-    combined = combined[:16000]
+    # 에이전트 생성용 텍스트: 전체 합산 16000자 제한
+    combined = "\n\n---\n\n".join(p.text for p in pdf_pages)[:16000]
 
     user_content = f"다음은 강의계획서/강의안입니다:\n\n{combined}\n\n이 수업에 맞는 2~4개의 조교 에이전트를 설계해주세요."
 
-    key_count = key_manager.count
+    client = get_client()
     last_err = ""
     response = None
 
-    for attempt in range(key_count):
+    for attempt in range(3):
         try:
-            response = await key_manager.get_client().chat.completions.create(
+            response = await client.aio.models.generate_content(
                 model=MODEL,
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT_FOR_GENERATOR},
-                    {"role": "user", "content": user_content},
-                ],
-                max_tokens=4096,
-                temperature=0.6,
-                extra_body={"reasoning_format": "hidden"},
+                contents=user_content,
+                config=types.GenerateContentConfig(
+                    system_instruction=_SYSTEM_PROMPT_FOR_GENERATOR,
+                    max_output_tokens=4096,
+                    temperature=0.6,
+                ),
             )
-            break  # 성공
+            # 토큰 로깅
+            if response.usage_metadata:
+                u = response.usage_metadata
+                print(
+                    f"[generator] tokens — input: {u.prompt_token_count}, "
+                    f"output: {u.candidates_token_count}, "
+                    f"total: {u.total_token_count}"
+                )
+            break
         except Exception as e:
             last_err = str(e)
-            if "429" in last_err or "rate_limit" in last_err.lower():
-                if attempt < key_count - 1:
-                    key_manager.rotate()  # 다음 키로 전환 후 즉시 재시도
+            if "429" in last_err or "quota" in last_err.lower():
+                if attempt < 2:
+                    await asyncio.sleep(60)
                     continue
-            else:
-                raise HTTPException(status_code=500, detail=f"에이전트 생성 중 오류: {last_err[:200]}")
+            raise HTTPException(status_code=500, detail=f"에이전트 생성 중 오류: {last_err[:200]}")
 
     if response is None:
-        # 모든 키 소진
-        wait_match = re.search(r"try again in (\d+)m(\d+\.?\d*)s", last_err)
-        if wait_match:
-            wait_msg = f"{wait_match.group(1)}분 {int(float(wait_match.group(2)))}초"
-        else:
-            wait_msg = "잠시"
         raise HTTPException(
             status_code=429,
-            detail=f"모든 API 키의 한도가 초과되었습니다. {wait_msg} 후 다시 시도해주세요."
+            detail="API 한도가 초과되었습니다. 잠시 후 다시 시도해주세요."
         )
 
-    raw = response.choices[0].message.content or "[]"
+    raw = response.text or "[]"
 
-    # JSON 파싱 전처리: think 블록 및 코드 블록 제거
-    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
+    # JSON 파싱 전처리: 코드 블록 제거
     raw = re.sub(r"```(?:json)?\s*", "", raw)
     raw = re.sub(r"```\s*$", "", raw)
     raw = raw.strip()

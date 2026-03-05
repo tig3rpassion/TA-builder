@@ -15,16 +15,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from chat import (
-    append_pdf_texts,
+    append_pdf_data,
     clear_history,
     create_session,
     get_history_length,
     get_session,
-    get_session_pdf_texts,
+    get_session_pdf_pages,
     stream_chat,
     update_session_agents,
 )
-from generator import extract_text_from_pdf, generate_agents
+from generator import extract_pdf_pages, generate_agents
 
 load_dotenv()
 
@@ -50,20 +50,23 @@ async def generate(files: List[UploadFile] = File(...)):
     if len(files) > 5:
         raise HTTPException(status_code=400, detail="파일은 최대 5개까지 업로드 가능합니다.")
 
-    pdf_texts = []
+    all_pages = []
+    pdf_bytes_map: dict[str, bytes] = {}
+
     for file in files:
         if not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail=f"{file.filename}: PDF 파일만 지원합니다.")
         content = await file.read()
-        text = extract_text_from_pdf(content, file.filename)
-        if text.strip():
-            pdf_texts.append(text)
+        pages = extract_pdf_pages(content, file.filename)
+        if pages:
+            all_pages.extend(pages)
+            pdf_bytes_map[file.filename] = content
 
-    if not pdf_texts:
+    if not all_pages:
         raise HTTPException(status_code=400, detail="PDF에서 텍스트를 추출할 수 없습니다.")
 
-    agents = await generate_agents(pdf_texts)
-    session_id = create_session(agents, pdf_texts)
+    agents = await generate_agents(all_pages)
+    session_id = create_session(agents, pdf_pages=all_pages, pdf_bytes_map=pdf_bytes_map)
 
     return {"session_id": session_id, "agents": agents}
 
@@ -101,22 +104,25 @@ async def add_material(session_id: str, files: List[UploadFile] = File(...)):
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
 
-    new_texts = []
+    new_pages = []
+    new_bytes_map: dict[str, bytes] = {}
+
     for file in files:
         if not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail=f"{file.filename}: PDF 파일만 지원합니다.")
         content = await file.read()
-        text = extract_text_from_pdf(content, file.filename)
-        if text.strip():
-            new_texts.append(text)
+        pages = extract_pdf_pages(content, file.filename)
+        if pages:
+            new_pages.extend(pages)
+            new_bytes_map[file.filename] = content
 
-    if not new_texts:
+    if not new_pages:
         raise HTTPException(status_code=400, detail="PDF에서 텍스트를 추출할 수 없습니다.")
 
-    append_pdf_texts(session_id, new_texts)
-    all_texts = get_session_pdf_texts(session_id)
+    append_pdf_data(session_id, new_pages, new_bytes_map)
+    all_pages = get_session_pdf_pages(session_id)
 
-    new_agents = await generate_agents(all_texts)
+    new_agents = await generate_agents(all_pages)
     update_session_agents(session_id, new_agents)
 
     return {"session_id": session_id, "agents": new_agents}
