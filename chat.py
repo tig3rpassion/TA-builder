@@ -1,0 +1,175 @@
+"""
+대화 관리 모듈 — 세션 기반
+Groq API 스트리밍, 세션별 에이전트 + 대화 히스토리 관리
+"""
+
+import asyncio
+import re
+import uuid
+from typing import AsyncGenerator, Optional
+
+from key_manager import key_manager
+
+KOREAN_ONLY_RULE = (
+    "CRITICAL: You MUST respond ONLY in Korean (한국어) and English technical terms. "
+    "NEVER use any other language. Forbidden examples: "
+    "Spanish: importante, necesario, ademas; "
+    "Turkish: yasal, gerekli; "
+    "German: erklären, untersuchen, wichtig, jedoch; "
+    "Russian: простран, области; "
+    "French, Italian, Arabic — all forbidden. "
+    "If you are about to write a non-Korean/non-English word, replace it with Korean immediately. "
+    "Technical terms: 한국어(English) side by side, e.g. 좌표계(CRS).\n\n"
+)
+
+
+def _strip_non_korean(text: str) -> str:
+    """비ASCII·비한글 문자 제거"""
+    return re.sub(
+        r'[^\x00-\x7f'
+        r'\uac00-\ud7a3'   # 한글 음절
+        r'\u3130-\u318f'   # 한글 호환 자모
+        r'\u1100-\u11ff'   # 한글 자모
+        r'\u2000-\u27ff'   # 구두점·화살표·수학 기호
+        r']',
+        '',
+        text
+    )
+
+
+def _cleanup_artifacts(text: str) -> str:
+    """필터링 후 남은 잔재 정리 (문장 앞 쉼표, 이중 공백 등)"""
+    text = re.sub(r'(?m)^,\s*', '', text)
+    text = re.sub(r',\s*,', ',', text)
+    text = re.sub(r'  +', ' ', text)
+    text = re.sub(r'\s+(를|을|이|가|은|는|의|에|로|으로|와|과)\b', r'\1', text)
+    return text
+
+
+MODEL = "llama-3.3-70b-versatile"
+MAX_HISTORY = 20
+
+# 세션 저장소: {session_id: {"agents": [...], "conversations": {agent_id: [...]}}}
+sessions: dict[str, dict] = {}
+
+
+def create_session(agents: list[dict]) -> str:
+    """새 세션 생성, session_id 반환"""
+    session_id = str(uuid.uuid4())
+    sessions[session_id] = {
+        "agents": agents,
+        "conversations": {a["id"]: [] for a in agents},
+    }
+    return session_id
+
+
+def get_session(session_id: str) -> Optional[dict]:
+    return sessions.get(session_id)
+
+
+def update_session_agents(session_id: str, agents: list[dict]) -> bool:
+    """에이전트 정의 업데이트 (이름, 역할, system_prompt 등). 대화 히스토리 유지."""
+    session = sessions.get(session_id)
+    if not session:
+        return False
+    old_convos = session["conversations"]
+    new_convos = {}
+    for agent in agents:
+        aid = agent["id"]
+        new_convos[aid] = old_convos.get(aid, [])
+    session["agents"] = agents
+    session["conversations"] = new_convos
+    return True
+
+
+def _get_agent(session: dict, agent_id: str) -> Optional[dict]:
+    for a in session["agents"]:
+        if a["id"] == agent_id:
+            return a
+    return None
+
+
+def _build_system_prompt(agent: dict) -> str:
+    return KOREAN_ONLY_RULE + agent["system_prompt"]
+
+
+async def stream_chat(
+    session_id: str, agent_id: str, user_message: str
+) -> AsyncGenerator[str, None]:
+    """사용자 메시지를 받아 에이전트 응답을 스트리밍으로 반환"""
+    session = sessions.get(session_id)
+    if not session:
+        yield "[오류: 세션을 찾을 수 없습니다]"
+        return
+
+    agent = _get_agent(session, agent_id)
+    if not agent:
+        yield "[오류: 에이전트를 찾을 수 없습니다]"
+        return
+
+    history = session["conversations"][agent_id]
+    history.append({"role": "user", "content": user_message})
+
+    if len(history) > MAX_HISTORY:
+        session["conversations"][agent_id] = history[-MAX_HISTORY:]
+        history = session["conversations"][agent_id]
+
+    messages = [{"role": "system", "content": _build_system_prompt(agent)}] + history
+
+    raw_chunks: list[str] = []
+    key_count = key_manager.count
+    MAX_ATTEMPTS = max(5, key_count * 2)  # 키 수만큼 추가 시도 허용
+
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            raw_chunks = []
+            stream = await key_manager.get_client().chat.completions.create(
+                model=MODEL,
+                messages=messages,
+                max_tokens=2048,
+                stream=True,
+            )
+            async for chunk in stream:
+                text = _strip_non_korean(chunk.choices[0].delta.content or "")
+                raw_chunks.append(text)
+                yield text
+            break
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "rate_limit" in err.lower():
+                # 다른 키가 있으면 즉시 전환
+                rotated = key_manager.rotate()
+                if rotated and attempt < MAX_ATTEMPTS - 1:
+                    yield f"\n\n[API 키 전환 중... (키 {key_manager.current_index() + 1}/{key_count})]\n\n"
+                    continue
+                # 모든 키 소진 → 대기 후 재시도
+                wait_match = re.search(r'try again in (\d+\.?\d*)s', err)
+                wait_m = re.search(r'try again in (\d+)m(\d+\.?\d*)s', err)
+                if wait_m:
+                    wait = int(wait_m.group(1)) * 60 + float(wait_m.group(2)) + 2
+                elif wait_match:
+                    wait = float(wait_match.group(1)) + 2
+                else:
+                    wait = 62.0
+                yield f"\n\n[모든 API 키 한도 초과 — {int(wait)}초 후 재시도합니다...]\n\n"
+                await asyncio.sleep(wait)
+            else:
+                yield f"\n\n[오류: {err[:120]}]"
+                break
+
+    history.append({"role": "assistant", "content": _cleanup_artifacts("".join(raw_chunks))})
+
+
+def clear_history(session_id: str, agent_id: str) -> bool:
+    session = sessions.get(session_id)
+    if not session or agent_id not in session["conversations"]:
+        return False
+    session["conversations"][agent_id] = []
+    return True
+
+
+def get_history_length(session_id: str, agent_id: str) -> int:
+    session = sessions.get(session_id)
+    if not session:
+        return 0
+    return len(session["conversations"].get(agent_id, []))

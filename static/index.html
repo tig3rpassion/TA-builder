@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TA Builder — 수업 조교 에이전트 빌더</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- ===== STEP 1: 업로드 ===== -->
+    <div id="step-upload" class="step-screen">
+      <div class="step-container">
+        <div class="step-header">
+          <div class="step-icon">🎓</div>
+          <h1>TA Builder</h1>
+          <p class="step-desc">강의계획서나 강의안 PDF를 업로드하면<br>맞춤형 수업 조교 에이전트를 자동으로 만들어 드립니다</p>
+        </div>
+
+        <div id="drop-zone" class="drop-zone">
+          <div class="drop-icon">📄</div>
+          <div class="drop-text">PDF 파일을 드래그하거나 클릭하여 업로드</div>
+          <div class="drop-hint">최대 5개 파일 · PDF만 지원</div>
+          <input type="file" id="file-input" accept=".pdf" multiple hidden />
+        </div>
+
+        <div id="file-list" class="file-list hidden"></div>
+
+        <button id="generate-btn" class="btn-primary" disabled>
+          에이전트 생성하기
+        </button>
+
+        <div id="generate-status" class="generate-status hidden">
+          <div class="spinner"></div>
+          <span id="generate-status-text">PDF 분석 중...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== STEP 2: 에이전트 확인/편집 ===== -->
+    <div id="step-preview" class="step-screen hidden">
+      <div class="step-container step-container--wide">
+        <div class="step-header">
+          <div class="step-icon">✨</div>
+          <h1>에이전트 확인</h1>
+          <p class="step-desc">생성된 에이전트를 확인하고 이름과 역할을 편집할 수 있습니다</p>
+        </div>
+
+        <div id="preview-agents" class="preview-agents"></div>
+
+        <div class="preview-actions">
+          <button id="back-btn" class="btn-secondary">← 다시 업로드</button>
+          <button id="start-btn" class="btn-primary">채팅 시작하기 →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== STEP 3: 채팅 ===== -->
+    <div id="step-chat" class="hidden" style="display:flex;flex-direction:column;height:100vh">
+
+      <header>
+        <div class="header-inner">
+          <div class="header-title">
+            <span class="header-icon">🎓</span>
+            <div>
+              <h1 id="chat-title">수업 조교</h1>
+              <div class="header-subtitle" id="chat-subtitle">에이전트와 대화하세요</div>
+            </div>
+          </div>
+          <div class="header-right">
+            <button id="clear-btn" class="btn-clear hidden">대화 초기화</button>
+            <button id="reset-btn" class="btn-reset">← 처음으로</button>
+          </div>
+        </div>
+      </header>
+
+      <div class="agent-selector" id="agent-selector"></div>
+
+      <main>
+        <div id="chat-messages">
+          <div class="welcome-screen" id="welcome-screen">
+            <div class="welcome-icon">💬</div>
+            <h2>조교에게 질문해 보세요</h2>
+            <p>위에서 에이전트를 선택하면 채팅을 시작할 수 있습니다</p>
+            <div class="agent-hints" id="agent-hints"></div>
+          </div>
+        </div>
+      </main>
+
+      <div class="input-area">
+        <div class="input-inner">
+          <textarea
+            id="message-input"
+            placeholder="에이전트를 선택해주세요"
+            rows="1"
+            disabled
+          ></textarea>
+          <button id="send-btn" class="btn-send" disabled>전송</button>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>
