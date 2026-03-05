@@ -19,6 +19,15 @@ KOREAN_ONLY_RULE = (
     "한국어로 답하지 않으면 실패입니다.\n\n"
 )
 
+BREVITY_RULE = (
+    "ABSOLUTE RULE — RESPONSE STYLE:\n"
+    "【1단계 — 확인】학생의 질문 의도가 불분명하거나 범위가 넓으면, "
+    "먼저 2~3문장으로 짧게 확인 질문만 하세요. 이 단계에서 본 답변을 하지 마세요.\n"
+    "【2단계 — 본 답변】의도가 파악되면 핵심만 간결하게 답하세요. "
+    "서론, 배경 설명, 요약 반복은 절대 포함하지 마세요. "
+    "본 답변은 반드시 10문장 이내로 작성하세요.\n\n"
+)
+
 
 _cjk_re = re.compile(
     r'[\u4e00-\u9fff'   # 한자 (CJK Unified Ideographs)
@@ -102,7 +111,7 @@ def _get_agent(session: dict, agent_id: str) -> Optional[dict]:
 
 
 def _build_system_prompt(agent: dict, pdf_texts: list[str] = None) -> str:
-    base = KOREAN_ONLY_RULE + agent["system_prompt"]
+    base = KOREAN_ONLY_RULE + BREVITY_RULE + agent["system_prompt"]
     if not pdf_texts:
         return base
     lecture_context = "\n---\n".join(pdf_texts)[:20000]
@@ -110,12 +119,10 @@ def _build_system_prompt(agent: dict, pdf_texts: list[str] = None) -> str:
         base
         + "\n\n## 강의 자료 (반드시 참고하여 답변하세요)\n\n"
         + lecture_context
-        + "\n\n## 답변 가이드라인\n"
-        + "1. [확인 우선] 질문 의도가 불분명하면 먼저 짧게(2~3문장) 확인 질문을 하세요. 본 답변은 그 다음입니다.\n"
-        + "2. [간결하게] 본 답변도 핵심만 — 불필요한 배경 설명, 서론, 요약 반복 생략.\n"
-        + "3. 강의 자료 근거로 답하되 '강의 자료에 따르면...', 'n주차 내용에서...' 형태로 인용하세요.\n"
-        + "4. 자료에 없는 내용은 일반 지식으로 보충하되, 자료 기반 답변과 구분하여 명시하세요.\n"
-        + "5. 학생이 스스로 생각할 수 있도록 유도 질문을 활용하세요.\n"
+        + "\n\n## 추가 지침\n"
+        + "- 강의 자료 근거로 답하되 '강의 자료에 따르면...', 'n주차 내용에서...' 형태로 인용하세요.\n"
+        + "- 자료에 없는 내용은 일반 지식으로 보충하되, 자료 기반 답변과 구분하여 명시하세요.\n"
+        + "- 학생이 스스로 생각할 수 있도록 유도 질문을 활용하세요.\n"
     )
 
 
