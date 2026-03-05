@@ -42,7 +42,7 @@ def _cleanup_artifacts(text: str) -> str:
     return text
 
 
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "qwen/qwen3-32b"
 MAX_HISTORY = 20
 
 # 세션 저장소: {session_id: {"agents": [...], "conversations": {agent_id: [...]}}}
@@ -101,8 +101,21 @@ def _get_agent(session: dict, agent_id: str) -> Optional[dict]:
     return None
 
 
-def _build_system_prompt(agent: dict) -> str:
-    return KOREAN_ONLY_RULE + agent["system_prompt"]
+def _build_system_prompt(agent: dict, pdf_texts: list[str] = None) -> str:
+    base = KOREAN_ONLY_RULE + agent["system_prompt"]
+    if not pdf_texts:
+        return base
+    lecture_context = "\n---\n".join(pdf_texts)[:6000]
+    return (
+        base
+        + "\n\n## 강의 자료 (반드시 참고하여 답변하세요)\n\n"
+        + lecture_context
+        + "\n\n## 답변 가이드라인\n"
+        + "1. 위 강의 자료의 내용을 근거로 구체적으로 답하세요.\n"
+        + "2. 가능하면 '강의 자료에 따르면...', '이 수업의 n주차 내용에서...' 형태로 인용하세요.\n"
+        + "3. 자료에 없는 내용은 일반 지식으로 보충하되, 자료 기반 답변과 구분하여 명시하세요.\n"
+        + "4. 학생이 스스로 생각할 수 있도록 유도 질문을 활용하세요.\n"
+    )
 
 
 async def stream_chat(
@@ -128,7 +141,8 @@ async def stream_chat(
 
     # API 호출 시 마지막 유저 메시지에 한국어 리마인더 삽입 (저장본은 원본 유지)
     api_history = history[:-1] + [{"role": "user", "content": f"[반드시 한국어로만 답하시오]\n{user_message}"}]
-    messages = [{"role": "system", "content": _build_system_prompt(agent)}] + api_history
+    pdf_texts = session.get("pdf_texts", [])
+    messages = [{"role": "system", "content": _build_system_prompt(agent, pdf_texts)}] + api_history
 
     raw_chunks: list[str] = []
     key_count = key_manager.count
@@ -141,6 +155,8 @@ async def stream_chat(
                 model=MODEL,
                 messages=messages,
                 max_tokens=2048,
+                temperature=0.7,
+                top_p=0.8,
                 stream=True,
             )
             async for chunk in stream:
