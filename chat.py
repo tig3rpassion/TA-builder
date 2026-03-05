@@ -20,18 +20,17 @@ KOREAN_ONLY_RULE = (
 )
 
 
-def _strip_non_korean(text: str) -> str:
-    """비ASCII·비한글 문자 제거"""
-    return re.sub(
-        r'[^\x00-\x7f'
-        r'\uac00-\ud7a3'   # 한글 음절
-        r'\u3130-\u318f'   # 한글 호환 자모
-        r'\u1100-\u11ff'   # 한글 자모
-        r'\u2000-\u27ff'   # 구두점·화살표·수학 기호
-        r']',
-        '',
-        text
-    )
+_cjk_re = re.compile(
+    r'[\u4e00-\u9fff'   # 한자 (CJK Unified Ideographs)
+    r'\u3400-\u4dbf'    # 한자 확장 A
+    r'\u3040-\u309f'    # 히라가나
+    r'\u30a0-\u30ff'    # 카타카나
+    r']'
+)
+
+def _strip_cjk(text: str) -> str:
+    """한자·일본어 가나만 제거. 한국어·영어·기호는 유지."""
+    return _cjk_re.sub('', text)
 
 
 def _cleanup_artifacts(text: str) -> str:
@@ -145,7 +144,7 @@ async def stream_chat(
                 stream=True,
             )
             async for chunk in stream:
-                text = chunk.choices[0].delta.content or ""
+                text = _strip_cjk(chunk.choices[0].delta.content or "")
                 raw_chunks.append(text)
                 yield text
             break

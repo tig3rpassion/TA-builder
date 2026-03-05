@@ -135,5 +135,7 @@ async def generate_agents(pdf_texts: list[str]) -> list[dict]:
         agent["color"] = COLOR_POOL[i % len(COLOR_POOL)]
         agent["name"] = _cjk_pat.sub("", agent.get("name", "")).strip()
         agent["role"] = _cjk_pat.sub("", agent.get("role", "")).strip()
+        agent["description"] = _cjk_pat.sub("", agent.get("description", "")).strip()
+        agent["system_prompt"] = _cjk_pat.sub("", agent.get("system_prompt", "")).strip()
 
     return agents
