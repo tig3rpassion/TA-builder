@@ -105,7 +105,7 @@ def _build_system_prompt(agent: dict, pdf_texts: list[str] = None) -> str:
     base = KOREAN_ONLY_RULE + agent["system_prompt"]
     if not pdf_texts:
         return base
-    lecture_context = "\n---\n".join(pdf_texts)[:6000]
+    lecture_context = "\n---\n".join(pdf_texts)[:20000]
     return (
         base
         + "\n\n## 강의 자료 (반드시 참고하여 답변하세요)\n\n"
@@ -159,10 +159,28 @@ async def stream_chat(
                 top_p=0.8,
                 stream=True,
             )
+            in_think = False
+            think_buf = ""
             async for chunk in stream:
-                text = _strip_cjk(chunk.choices[0].delta.content or "")
+                text = chunk.choices[0].delta.content or ""
+                # <think>...</think> 블록 스트리밍 필터
+                if in_think:
+                    think_buf += text
+                    if "</think>" in think_buf:
+                        in_think = False
+                        text = think_buf.split("</think>", 1)[1]
+                        think_buf = ""
+                    else:
+                        continue
+                elif "<think>" in text:
+                    in_think = True
+                    before, rest = text.split("<think>", 1)
+                    think_buf = rest
+                    text = before
+                text = _strip_cjk(text)
                 raw_chunks.append(text)
-                yield text
+                if text:
+                    yield text
             break
         except Exception as e:
             err = str(e)

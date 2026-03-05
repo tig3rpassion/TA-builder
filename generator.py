@@ -36,8 +36,7 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         t = page.extract_text() or ""
         texts.append(t)
     full = "\n".join(texts)
-    # 토큰 절약: 앞 8000자만 사용
-    return full[:8000]
+    return full[:16000]
 
 
 _SYSTEM_PROMPT_FOR_GENERATOR = """\
@@ -80,7 +79,7 @@ async def generate_agents(pdf_texts: list[str]) -> list[dict]:
     """
     combined = "\n\n---\n\n".join(pdf_texts)
     # 전체 합산도 8000자로 제한
-    combined = combined[:8000]
+    combined = combined[:16000]
 
     user_content = f"다음은 강의계획서/강의안입니다:\n\n{combined}\n\n이 수업에 맞는 2~4개의 조교 에이전트를 설계해주세요."
 
@@ -123,7 +122,8 @@ async def generate_agents(pdf_texts: list[str]) -> list[dict]:
 
     raw = response.choices[0].message.content or "[]"
 
-    # JSON 파싱 (코드 블록 제거)
+    # JSON 파싱 전처리: think 블록 및 코드 블록 제거
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
     raw = re.sub(r"```(?:json)?\s*", "", raw)
     raw = re.sub(r"```\s*$", "", raw)
     raw = raw.strip()
