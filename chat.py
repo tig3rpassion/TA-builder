@@ -157,6 +157,7 @@ async def stream_chat(
                 max_tokens=2048,
                 temperature=0.7,
                 top_p=0.8,
+                extra_body={"reasoning_format": "hidden"},
                 stream=True,
             )
             in_think = False

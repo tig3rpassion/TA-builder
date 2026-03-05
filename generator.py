@@ -95,8 +95,9 @@ async def generate_agents(pdf_texts: list[str]) -> list[dict]:
                     {"role": "system", "content": _SYSTEM_PROMPT_FOR_GENERATOR},
                     {"role": "user", "content": user_content},
                 ],
-                max_tokens=2048,
+                max_tokens=4096,
                 temperature=0.6,
+                extra_body={"reasoning_format": "hidden"},
             )
             break  # 성공
         except Exception as e:
