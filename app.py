@@ -55,7 +55,7 @@ async def generate(files: List[UploadFile] = File(...)):
         if not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail=f"{file.filename}: PDF 파일만 지원합니다.")
         content = await file.read()
-        text = extract_text_from_pdf(content)
+        text = extract_text_from_pdf(content, file.filename)
         if text.strip():
             pdf_texts.append(text)
 
@@ -106,7 +106,7 @@ async def add_material(session_id: str, files: List[UploadFile] = File(...)):
         if not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail=f"{file.filename}: PDF 파일만 지원합니다.")
         content = await file.read()
-        text = extract_text_from_pdf(content)
+        text = extract_text_from_pdf(content, file.filename)
         if text.strip():
             new_texts.append(text)
 

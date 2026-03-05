@@ -28,15 +28,16 @@ COLOR_POOL = [
 ]
 
 
-def extract_text_from_pdf(file_bytes: bytes) -> str:
-    """PDF 바이트에서 텍스트 추출 (최대 8000자)"""
+def extract_text_from_pdf(file_bytes: bytes, filename: str = "") -> str:
+    """PDF 바이트에서 텍스트 추출. 페이지마다 [파일명, p.N] 헤더를 붙여 반환."""
     reader = PdfReader(BytesIO(file_bytes))
-    texts = []
-    for page in reader.pages:
+    label = filename or "첨부파일"
+    parts = []
+    for i, page in enumerate(reader.pages, 1):
         t = page.extract_text() or ""
-        texts.append(t)
-    full = "\n".join(texts)
-    return full[:16000]
+        if t.strip():
+            parts.append(f"[{label}, p.{i}]\n{t}")
+    return "\n\n".join(parts)[:16000]
 
 
 _SYSTEM_PROMPT_FOR_GENERATOR = """\
