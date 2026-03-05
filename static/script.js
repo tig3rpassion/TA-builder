@@ -10,6 +10,51 @@ let selectedAgentId = null;
 let isStreaming = false;
 let currentAgentInChat = null;
 
+// ─── 세션 로컬 저장/복원 ──────────────────────────────────────────────────────
+function saveSessionLocally() {
+  try {
+    localStorage.setItem("ta_session_id", sessionId);
+    localStorage.setItem("ta_agents", JSON.stringify(agents));
+  } catch (_) {}
+}
+
+async function tryRecoverSession() {
+  /** 세션이 소멸된 경우 저장된 에이전트로 새 세션을 자동 재생성 */
+  const savedAgents = localStorage.getItem("ta_agents");
+  if (!savedAgents) return false;
+  try {
+    const parsed = JSON.parse(savedAgents);
+    const res = await fetch("/agents/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agents: parsed }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    sessionId = data.session_id;
+    agents = data.agents;
+    saveSessionLocally();
+    showToast("세션이 자동 재연결되었습니다. (강의 자료는 다시 업로드가 필요합니다)");
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function showToast(msg) {
+  const t = document.createElement("div");
+  t.textContent = msg;
+  t.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);"
+    + "background:#333;color:#fff;padding:10px 20px;border-radius:8px;"
+    + "font-size:13px;z-index:9999;opacity:0;transition:opacity 0.3s;max-width:90%";
+  document.body.appendChild(t);
+  requestAnimationFrame(() => { t.style.opacity = "1"; });
+  setTimeout(() => {
+    t.style.opacity = "0";
+    setTimeout(() => t.remove(), 300);
+  }, 4000);
+}
+
 // ─── 화면 전환 ────────────────────────────────────────────────────────────────
 function showStep(step) {
   document.getElementById("step-upload").classList.add("hidden");
@@ -133,6 +178,7 @@ async function runGenerate() {
     const data = await res.json();
     sessionId = data.session_id;
     agents = data.agents;
+    saveSessionLocally();
 
     showPreview();
   } catch (err) {
@@ -356,7 +402,7 @@ async function sendMessage() {
   bubbleEl.appendChild(cursor);
 
   try {
-    const response = await fetch("/chat", {
+    let response = await fetch("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -367,9 +413,32 @@ async function sendMessage() {
     });
 
     if (!response.ok) {
-      const err = await response.json();
-      bubbleEl.textContent = `오류: ${err.detail || "알 수 없는 오류"}`;
-      return;
+      if (response.status === 404) {
+        bubbleEl.textContent = "세션 재연결 중...";
+        const recovered = await tryRecoverSession();
+        if (recovered) {
+          // 새 세션으로 같은 메시지 재전송
+          bubbleEl.textContent = "";
+          const retryRes = await fetch("/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: sessionId, agent_id: selectedAgentId, message }),
+          });
+          if (retryRes.ok) {
+            response = retryRes;
+          } else {
+            bubbleEl.textContent = "세션 재연결에 실패했습니다. PDF를 다시 업로드해 주세요.";
+            return;
+          }
+        } else {
+          bubbleEl.textContent = "세션이 만료되었습니다. PDF를 다시 업로드해 주세요.";
+          return;
+        }
+      } else {
+        const err = await response.json();
+        bubbleEl.textContent = `오류: ${err.detail || "알 수 없는 오류"}`;
+        return;
+      }
     }
 
     const reader = response.body.getReader();
@@ -543,6 +612,7 @@ function initLoadAgents() {
       const result = await res.json();
       sessionId = result.session_id;
       agents = result.agents;
+      saveSessionLocally();
       showPreview();
     } catch (err) {
       alert(`불러오기 오류: ${err.message}`);

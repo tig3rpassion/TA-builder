@@ -4,11 +4,35 @@ Groq API 스트리밍, 세션별 에이전트 + 대화 히스토리 관리
 """
 
 import asyncio
+import json
+import os
 import re
 import uuid
 from typing import AsyncGenerator, Optional
 
 from key_manager import key_manager
+
+# 세션 파일 경로 (/tmp는 Render 슬립/웨이크 사이클에서도 유지됨)
+_SESSIONS_FILE = os.path.join(os.environ.get("SESSIONS_DIR", "/tmp"), "ta_builder_sessions.json")
+
+
+def _persist() -> None:
+    """세션 전체를 파일에 저장"""
+    try:
+        with open(_SESSIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(sessions, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _restore() -> None:
+    """서버 시작 시 파일에서 세션 복원"""
+    try:
+        if os.path.exists(_SESSIONS_FILE):
+            with open(_SESSIONS_FILE, "r", encoding="utf-8") as f:
+                sessions.update(json.load(f))
+    except Exception:
+        pass
 
 KOREAN_ONLY_RULE = (
     "ABSOLUTE RULE — LANGUAGE: 모든 응답은 반드시 한국어로만 작성하세요. "
@@ -56,6 +80,7 @@ MAX_HISTORY = 20
 
 # 세션 저장소: {session_id: {"agents": [...], "conversations": {agent_id: [...]}}}
 sessions: dict[str, dict] = {}
+_restore()  # 서버 시작 시 파일에서 복원
 
 
 def create_session(agents: list[dict], pdf_texts: list[str] = None) -> str:
@@ -66,6 +91,7 @@ def create_session(agents: list[dict], pdf_texts: list[str] = None) -> str:
         "conversations": {a["id"]: [] for a in agents},
         "pdf_texts": pdf_texts or [],
     }
+    _persist()
     return session_id
 
 
@@ -81,6 +107,7 @@ def append_pdf_texts(session_id: str, new_texts: list[str]) -> bool:
     if not session:
         return False
     session.setdefault("pdf_texts", []).extend(new_texts)
+    _persist()
     return True
 
 
@@ -100,6 +127,7 @@ def update_session_agents(session_id: str, agents: list[dict]) -> bool:
         new_convos[aid] = old_convos.get(aid, [])
     session["agents"] = agents
     session["conversations"] = new_convos
+    _persist()
     return True
 
 
