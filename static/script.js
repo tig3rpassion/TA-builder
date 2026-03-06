@@ -171,8 +171,9 @@ async function runGenerate() {
     const res = await fetch("/generate", { method: "POST", body: formData });
 
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || "생성 실패");
+      let errMsg = "생성 실패";
+      try { const err = await res.json(); errMsg = err.detail || errMsg; } catch { errMsg = await res.text().catch(() => errMsg); }
+      throw new Error(errMsg);
     }
 
     const data = await res.json();
@@ -435,8 +436,9 @@ async function sendMessage() {
           return;
         }
       } else {
-        const err = await response.json();
-        bubbleEl.textContent = `오류: ${err.detail || "알 수 없는 오류"}`;
+        let errMsg = "알 수 없는 오류";
+        try { const err = await response.json(); errMsg = err.detail || errMsg; } catch { errMsg = await response.text().catch(() => errMsg); }
+        bubbleEl.textContent = `오류: ${errMsg}`;
         return;
       }
     }
@@ -606,8 +608,9 @@ function initLoadAgents() {
         body: JSON.stringify({ agents: data.agents }),
       });
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "불러오기 실패");
+        let errMsg = "불러오기 실패";
+        try { const err = await res.json(); errMsg = err.detail || errMsg; } catch { errMsg = await res.text().catch(() => errMsg); }
+        throw new Error(errMsg);
       }
       const result = await res.json();
       sessionId = result.session_id;

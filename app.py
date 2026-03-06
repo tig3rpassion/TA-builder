@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import List
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -29,6 +29,15 @@ from generator import extract_pdf_pages, generate_agents
 load_dotenv()
 
 app = FastAPI(title="TA Builder — 범용 수업 조교 에이전트 빌더")
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"서버 내부 오류: {str(exc)[:300]}"},
+    )
+
 
 static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=static_path), name="static")
@@ -57,7 +66,10 @@ async def generate(files: List[UploadFile] = File(...)):
         if not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail=f"{file.filename}: PDF 파일만 지원합니다.")
         content = await file.read()
-        pages = extract_pdf_pages(content, file.filename)
+        try:
+            pages = extract_pdf_pages(content, file.filename)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"{file.filename} 처리 중 오류: {str(e)[:200]}")
         if pages:
             all_pages.extend(pages)
             pdf_bytes_map[file.filename] = content
@@ -111,7 +123,10 @@ async def add_material(session_id: str, files: List[UploadFile] = File(...)):
         if not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail=f"{file.filename}: PDF 파일만 지원합니다.")
         content = await file.read()
-        pages = extract_pdf_pages(content, file.filename)
+        try:
+            pages = extract_pdf_pages(content, file.filename)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"{file.filename} 처리 중 오류: {str(e)[:200]}")
         if pages:
             new_pages.extend(pages)
             new_bytes_map[file.filename] = content
