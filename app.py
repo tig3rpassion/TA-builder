@@ -24,6 +24,7 @@ from chat import (
     stream_chat,
     update_session_agents,
 )
+from gemini_client import MissingApiKeyError, get_api_key_source, resolve_api_key
 from generator import extract_pdf_pages, generate_agents
 
 load_dotenv()
@@ -39,6 +40,14 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
+@app.exception_handler(MissingApiKeyError)
+async def missing_key_exception_handler(request: Request, exc: MissingApiKeyError):
+    return JSONResponse(
+        status_code=503,
+        content={"detail": str(exc)},
+    )
+
+
 static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=static_path), name="static")
 
@@ -49,11 +58,28 @@ async def index():
     return HTMLResponse(content=html_file.read_text(encoding="utf-8"))
 
 
+@app.get("/health/config")
+async def health_config():
+    key_source = get_api_key_source()
+    return {
+        "status": "ok" if key_source else "degraded",
+        "gemini_api_key_configured": bool(key_source),
+        "api_key_source": key_source,
+    }
+
+
+def _ensure_ai_configured() -> None:
+    """Gemini API 키 설정 여부를 사전 점검."""
+    resolve_api_key()
+
+
 # ─── PDF 업로드 → 에이전트 생성 ───────────────────────────────────────────────
 
 @app.post("/generate")
 async def generate(files: List[UploadFile] = File(...)):
     """PDF 파일 1~5개 업로드 → 에이전트 생성 → 세션 ID 반환"""
+    _ensure_ai_configured()
+
     if not files:
         raise HTTPException(status_code=400, detail="파일이 없습니다.")
     if len(files) > 5:
@@ -112,6 +138,8 @@ async def import_agents(req: ImportRequest):
 @app.post("/add-material/{session_id}")
 async def add_material(session_id: str, files: List[UploadFile] = File(...)):
     """기존 세션에 PDF 자료를 추가하고 에이전트를 재생성"""
+    _ensure_ai_configured()
+
     session = get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
@@ -178,6 +206,8 @@ class ChatRequest(BaseModel):
 @app.post("/chat")
 async def chat(req: ChatRequest):
     """사용자 메시지를 받아 스트리밍으로 에이전트 응답 반환"""
+    _ensure_ai_configured()
+
     session = get_session(req.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")

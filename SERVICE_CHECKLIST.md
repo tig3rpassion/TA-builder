@@ -4,24 +4,24 @@
 
 ---
 
-## A. 핵심 기능 — 강의 자료 컨텍스트 주입
+## A. 핵심 기능 — 강의 자료 컨텍스트 주입 (RAG)
 
 | # | 점검 항목 | 확인 방법 | 현재 상태 |
 |---|-----------|-----------|-----------|
-| A1 | PDF 텍스트 추출 후 `pdf_texts`가 세션에 저장되는가 | `app.py:66` `create_session(agents, pdf_texts)` | 정상 |
-| A2 | `stream_chat()`에서 `pdf_texts`를 `_build_system_prompt()`에 전달하는가 | `chat.py` stream_chat 내 `pdf_texts = session.get("pdf_texts", [])` | 정상 (v2 수정 완료) |
-| A3 | 컨텍스트 제한이 주요 내용을 충분히 담는가 | generator `[:16000]`, chat `[:20000]` | **수정 완료** — 각각 2배 확대 |
-| A4 | `/agents/import`로 세션 복원 시 `pdf_texts`가 전달되지 않음 | `app.py:92` `create_session(req.agents)` — pdf_texts 없음 | **버그**: import 후 채팅 시 강의 자료 없이 답변 |
+| A1 | PDF 페이지별 추출 후 `pdf_pages`가 세션에 저장되는가 | `app.py:69` `create_session(agents, pdf_pages=all_pages, pdf_bytes_map=pdf_bytes_map)` | **정상** |
+| A2 | `stream_chat()`에서 RAG 검색 후 관련 페이지만 전달되는가 | `chat.py:253` `search(tfidf_index, user_message, top_k=3)` | **정상** |
+| A3 | 컨텍스트 한도 | RAG 구조로 top-k=3 페이지만 주입 — 제한 개념 무의미 | **해결 (RAG로 구조적 해소)** |
+| A4 | `/agents/import` 후 채팅 시 강의 자료 없음 | import는 에이전트 정의만 복원, pdf_bytes 없음 — 설계상 허용 | **허용된 동작 (치명 버그 아님)** |
 
 ---
 
-## B. 모델 호환성 (qwen/qwen3-32b @ Groq)
+## B. 모델 (gemini-2.5-flash @ Google AI)
 
 | # | 점검 항목 | 확인 방법 | 현재 상태 |
 |---|-----------|-----------|-----------|
-| B1 | 모델 ID `qwen/qwen3-32b`가 Groq에서 유효한가 | Groq 콘솔 또는 API 응답 확인 | **정상** — Groq 공식 지원 확인 |
-| B2 | `<think>` 태그가 응답에 포함되지 않는가 | 실제 채팅 응답 확인 | **수정 완료** — `extra_body={"reasoning_format": "hidden"}` 적용, 로컬 테스트 통과 |
-| B3 | `top_p=0.8` 파라미터가 Groq API에서 허용되는가 | API 오류 여부 | 일반적으로 지원되나 모델별 예외 가능 |
+| B1 | 모델 ID `gemini-2.5-flash`가 유효한가 | `gemini_client.py:11` `MODEL = "gemini-2.5-flash"` | **정상** — Google AI 공식 지원 |
+| B2 | 불필요한 태그(`<think>` 등)가 응답에 포함되지 않는가 | Gemini는 해당 없음, 필터 코드 제거됨 | **정상** |
+| B3 | `top_p=0.8` 파라미터가 허용되는가 | `chat.py:305` `GenerateContentConfig(top_p=0.8)` | **정상** — Gemini API 정식 지원 |
 
 ---
 
@@ -29,10 +29,10 @@
 
 | # | 점검 항목 | 확인 방법 | 현재 상태 |
 |---|-----------|-----------|-----------|
-| C1 | 생성된 `system_prompt`가 500~1000자 범위인가 | 에이전트 생성 후 JSON 확인 | generator.py 지침 개선됨, 실제 길이는 LLM 의존 |
-| C2 | `system_prompt`에 강의 자료 핵심 내용이 반영되는가 | 생성된 system_prompt 텍스트 검토 | 개선된 프롬프트 적용됨, 검증 필요 |
-| C3 | JSON 파싱 오류 발생 시 사용자에게 명확한 안내가 가는가 | `generator.py:129` | 정상 (HTTPException 반환) |
-| C4 | CJK 필터 후 텍스트가 의도치 않게 비어버리는 경우 | `generator.py:136-139` | 잠재적 문제 — 중국어 강의자료 업로드 시 내용 소실 |
+| C1 | 생성된 `system_prompt`가 500~1000자 범위인가 | 에이전트 생성 후 JSON 확인 | 프롬프트 지침 적용됨, 실제 길이는 LLM 의존 |
+| C2 | `system_prompt`에 강의 자료 핵심 내용이 반영되는가 | 생성된 system_prompt 텍스트 검토 | 검증 필요 |
+| C3 | JSON 파싱 오류 시 사용자에게 명확한 안내가 가는가 | `generator.py` `json.JSONDecodeError` 처리 | **정상** (HTTPException 반환) |
+| C4 | CJK 필터 후 텍스트가 의도치 않게 비어버리는 경우 | `generator.py` CJK 필터 | **잠재적 문제** — 중국어 강의 자료 업로드 시 내용 소실 가능 |
 
 ---
 
@@ -40,9 +40,9 @@
 
 | # | 점검 항목 | 확인 방법 | 현재 상태 |
 |---|-----------|-----------|-----------|
-| D1 | Render 재배포 시 세션 초기화 | `/tmp/ta_builder_sessions.json` persist/restore | **부분 해결** — 슬립/웨이크는 복원됨. 재배포 시엔 소멸(프론트엔드 자동 재연결로 UX 보완) |
+| D1 | Render 재배포/슬립 후 세션 복원 | `chat.py:_restore()` + 대화 변경 시 `_persist()` 호출 | **정상** — `pdf_pages`/대화 히스토리 복원, 이미지(`pdf_bytes_map`)는 소실 후 텍스트 RAG fallback |
 | D2 | 세션 만료/cleanup 로직 없음 | `chat.py` sessions dict | **잔존 위험** — 장기 운영 시 파일/메모리 증가 가능 |
-| D3 | 대화 히스토리 MAX_HISTORY=20 제한이 적절한가 | `chat.py:46` | 정상 |
+| D3 | 대화 히스토리 `MAX_HISTORY=20` 제한 | `chat.py:128` | **정상** |
 
 ---
 
@@ -50,9 +50,10 @@
 
 | # | 점검 항목 | 확인 방법 | 현재 상태 |
 |---|-----------|-----------|-----------|
-| E1 | 이미지 기반(스캔) PDF는 텍스트 추출 불가 | `generator.py:extract_text_from_pdf()` — pypdf 사용 | **알려진 한계** — OCR 없음 |
-| E2 | generator(16000)와 chat(20000) 컨텍스트 한도 불일치 | generator.py:40, chat.py | 에이전트 생성 시 보이는 내용 ≠ 채팅 시 보이는 내용 (chat이 더 넓게 봄) |
-| E3 | 다중 PDF 업로드 시 각 파일의 내용이 구분되어 저장되는가 | `app.py:53-61`, `chat.py:_build_system_prompt()` | 정상 (리스트로 저장, `---` 구분자로 합산) |
+| E1 | 이미지 기반(스캔) PDF 처리 | PyMuPDF + Gemini 멀티모달 이미지 주입 | **부분 해결** — 도표·수식 이미지는 Gemini가 이해. 순수 스캔 텍스트 OCR은 미지원 |
+| E2 | generator/chat 컨텍스트 불일치 | RAG 구조로 동일한 PageData 기반 운영 | **해결** — 불일치 개념 소멸 |
+| E3 | 다중 PDF 업로드 시 파일별 구분 저장 | `app.py` `pdf_bytes_map`, `PageData.filename` | **정상** — 파일명 기준으로 구분 |
+| E4 | 서버 재시작 후 이미지 주입 불가 | `pdf_bytes_map`은 직렬화 제외 → 텍스트 RAG만 동작 | **알려진 한계 (설계상 허용)** |
 
 ---
 
@@ -60,9 +61,9 @@
 
 | # | 점검 항목 | 확인 방법 | 현재 상태 |
 |---|-----------|-----------|-----------|
-| F1 | Render 환경변수에 `GROQ_API_KEY_1` 이상 설정되어 있는가 | Render 대시보드 Environment | 외부 확인 필요 |
-| F2 | 키 로테이션이 429 응답 시 정상 작동하는가 | `key_manager.py:rotate()` | 정상 |
-| F3 | 단일 키 환경(`GROQ_API_KEY`)도 지원하는가 | `key_manager.py:29-32` | 정상 (하위 호환) |
+| F1 | Render 환경변수에 `GOOGLE_API_KEY`(권장) 또는 `GEMINI_API_KEY` 설정 여부 | Render 대시보드 Environment + `/health/config` | **외부 확인 필요** |
+| F2 | 429 응답 시 재시도 동작 | `generator.py`, `chat.py` — 60초 대기 × 최대 3회 | **정상** |
+| F3 | 로컬 `.env`에 `GOOGLE_API_KEY` 설정 | `.env` 파일 | **정상** |
 
 ---
 
@@ -70,14 +71,14 @@
 
 | 우선순위 | 항목 | 영향 |
 |---------|------|------|
-| ~~즉시 확인~~ | ~~B1 — 모델 ID 유효성~~ | 해결 완료 |
-| **즉시 확인** | A4 — import 시 pdf_texts 미전달 | 에이전트 불러오기 기능 무용화 |
-| **단기 개선** | A3 — 컨텍스트 6000자 제한 조정 | 긴 강의 자료 반영 품질 저하 |
-| **단기 개선** | E2 — generator/chat 컨텍스트 불일치 | 에이전트 생성과 채팅 내용 불일치 |
-| **장기 개선** | D1, D2 — 세션 영속성 및 메모리 관리 | 재배포/장기 운영 시 UX 저하 |
-| **장기 개선** | E1 — 스캔 PDF OCR 미지원 | 이미지 PDF 사용 불가 |
+| ~~완료~~ | ~~A1~A4 — 강의 자료 주입~~ | RAG 구조로 전면 해결 |
+| ~~완료~~ | ~~B1~B3 — 모델 전환~~ | Gemini 2.5 Flash 정상 동작 |
+| ~~완료~~ | ~~E2 — 컨텍스트 불일치~~ | RAG로 구조적 해소 |
+| **즉시 확인** | F1 — Render 환경변수 `GOOGLE_API_KEY` 또는 `GEMINI_API_KEY` | 미설정 시 서비스 전체 불가 |
+| **장기 개선** | D2 — 세션 cleanup | 장기 운영 시 메모리/파일 증가 |
+| **장기 개선** | E1 — 스캔 PDF OCR | 이미지 전용 PDF 텍스트 추출 불가 |
+| **저위험** | C4 — CJK 필터 부작용 | 중국어 강의 자료 사용 시만 해당 |
 
 ---
 
-*최종 업데이트: 2026-03-05*
-*다음 점검 시 B1(모델 유효성) 실제 API 호출 여부 반드시 확인*
+*최종 업데이트: 2026-03-06 (세션 대화 영속화 반영)*

@@ -338,6 +338,7 @@ async def stream_chat(
             break
 
     history.append({"role": "assistant", "content": _cleanup_artifacts("".join(raw_chunks))})
+    _persist()
 
 
 def clear_history(session_id: str, agent_id: str) -> bool:
@@ -345,6 +346,7 @@ def clear_history(session_id: str, agent_id: str) -> bool:
     if not session or agent_id not in session["conversations"]:
         return False
     session["conversations"][agent_id] = []
+    _persist()
     return True
 
 
