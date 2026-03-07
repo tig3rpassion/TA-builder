@@ -268,6 +268,9 @@ async def stream_chat(
     tfidf_index: Optional[TfidfIndex] = session.get("tfidf_index")
     pdf_bytes_map: dict[str, bytes] = session.get("pdf_bytes_map", {})
     rag_pages = search(tfidf_index, user_message, top_k=3) if tfidf_index else []
+    if not rag_pages:
+        # 유사도 0이어도 최소한 근거 페이지를 제시하기 위한 fallback
+        rag_pages = (session.get("pdf_pages") or [])[:2]
 
     # Gemini contents 구성
     # 이전 대화 히스토리 (마지막 user 제외)
