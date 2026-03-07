@@ -180,6 +180,32 @@ def _fallback_pages_from_session(session: dict, max_pages: int = 5) -> list[Page
     return all_pages[:max_pages]
 
 
+def _supplement_with_other_files(selected: list[PageData], session: dict, max_pages: int = 5) -> list[PageData]:
+    """선택된 페이지가 한 파일에 편중되면 다른 파일 대표 페이지를 보충."""
+    if not selected:
+        return selected
+
+    all_pages: list[PageData] = session.get("pdf_pages") or []
+    if not all_pages:
+        return selected
+
+    selected_files = {p.filename for p in selected}
+    file_count_total = len({p.filename for p in all_pages if p.filename})
+    if file_count_total <= 1 or len(selected_files) >= 2:
+        return selected
+
+    # 아직 포함되지 않은 파일의 첫 페이지를 순서대로 보충
+    for page in all_pages:
+        if len(selected) >= max_pages:
+            break
+        if not page.filename or page.filename in selected_files:
+            continue
+        selected.append(page)
+        selected_files.add(page.filename)
+
+    return selected
+
+
 MAX_HISTORY = 20
 
 # 세션 저장소
@@ -310,6 +336,9 @@ async def stream_chat(
     if not rag_pages:
         # 유사도 0이어도 최소한 파일별 대표 페이지를 근거로 제시
         rag_pages = _fallback_pages_from_session(session, max_pages=5)
+    else:
+        # 검색 결과가 한 파일에만 몰리면 다른 파일 페이지를 보충
+        rag_pages = _supplement_with_other_files(rag_pages, session, max_pages=5)
 
     # Gemini contents 구성
     # 이전 대화 히스토리 (마지막 user 제외)
