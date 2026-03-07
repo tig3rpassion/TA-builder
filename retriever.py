@@ -29,7 +29,9 @@ def build_index(pages: list[PageData]) -> TfidfIndex:
     """페이지 목록으로 TF-IDF 인덱스 구축"""
     texts = [p.text for p in pages]
     vectorizer = TfidfVectorizer(
-        token_pattern=r"(?u)\b\w+\b",  # 한국어 단어 토큰화 지원
+        # 한국어/영어 혼합 문서에서 안정적으로 동작하도록 문자 n-gram 기반 사용
+        analyzer="char_wb",
+        ngram_range=(2, 4),
         sublinear_tf=True,
     )
     tfidf_matrix = vectorizer.fit_transform(texts)

@@ -142,6 +142,44 @@ def _build_citation_footer(rag_pages: list[PageData]) -> str:
     return "\n\n" + "\n".join(lines)
 
 
+def _select_diverse_pages(pages: list[PageData], max_pages: int = 5, max_per_file: int = 2) -> list[PageData]:
+    """한 파일에 편중되지 않도록 페이지를 고르게 선택."""
+    selected: list[PageData] = []
+    file_counts: dict[str, int] = {}
+
+    for page in pages:
+        fname = page.filename or ""
+        if file_counts.get(fname, 0) >= max_per_file:
+            continue
+        selected.append(page)
+        file_counts[fname] = file_counts.get(fname, 0) + 1
+        if len(selected) >= max_pages:
+            break
+    return selected
+
+
+def _fallback_pages_from_session(session: dict, max_pages: int = 5) -> list[PageData]:
+    """RAG 검색 실패 시 파일별 대표 페이지를 fallback으로 선택."""
+    all_pages: list[PageData] = session.get("pdf_pages") or []
+    if not all_pages:
+        return []
+
+    first_by_file: list[PageData] = []
+    seen_files = set()
+    for page in all_pages:
+        fname = page.filename or ""
+        if fname in seen_files:
+            continue
+        seen_files.add(fname)
+        first_by_file.append(page)
+        if len(first_by_file) >= max_pages:
+            break
+
+    if first_by_file:
+        return first_by_file
+    return all_pages[:max_pages]
+
+
 MAX_HISTORY = 20
 
 # 세션 저장소
@@ -267,10 +305,11 @@ async def stream_chat(
     # RAG: 관련 페이지 검색
     tfidf_index: Optional[TfidfIndex] = session.get("tfidf_index")
     pdf_bytes_map: dict[str, bytes] = session.get("pdf_bytes_map", {})
-    rag_pages = search(tfidf_index, user_message, top_k=3) if tfidf_index else []
+    rag_candidates = search(tfidf_index, user_message, top_k=8) if tfidf_index else []
+    rag_pages = _select_diverse_pages(rag_candidates, max_pages=5, max_per_file=2)
     if not rag_pages:
-        # 유사도 0이어도 최소한 근거 페이지를 제시하기 위한 fallback
-        rag_pages = (session.get("pdf_pages") or [])[:2]
+        # 유사도 0이어도 최소한 파일별 대표 페이지를 근거로 제시
+        rag_pages = _fallback_pages_from_session(session, max_pages=5)
 
     # Gemini contents 구성
     # 이전 대화 히스토리 (마지막 user 제외)
