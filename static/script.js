@@ -9,12 +9,14 @@ let agents = [];
 let selectedAgentId = null;
 let isStreaming = false;
 let currentAgentInChat = null;
+let currentCourseName = "";
 
 // ─── 세션 로컬 저장/복원 ──────────────────────────────────────────────────────
 function saveSessionLocally() {
   try {
     localStorage.setItem("ta_session_id", sessionId);
     localStorage.setItem("ta_agents", JSON.stringify(agents));
+    localStorage.setItem("ta_course_name", currentCourseName || "");
   } catch (_) {}
 }
 
@@ -33,6 +35,7 @@ async function tryRecoverSession() {
     const data = await res.json();
     sessionId = data.session_id;
     agents = data.agents;
+    currentCourseName = localStorage.getItem("ta_course_name") || currentCourseName;
     saveSessionLocally();
     showToast("세션이 자동 재연결되었습니다. (강의 자료는 다시 업로드가 필요합니다)");
     return true;
@@ -53,6 +56,49 @@ function showToast(msg) {
     t.style.opacity = "0";
     setTimeout(() => t.remove(), 300);
   }, 4000);
+}
+
+function inferCourseNameFromFiles(files) {
+  if (!Array.isArray(files) || files.length === 0) return "";
+  const names = files.map((f) => (f && f.name ? f.name : ""))
+    .filter(Boolean)
+    .map((name) => name.replace(/\.pdf$/i, ""));
+
+  if (!names.length) return "";
+
+  const preferred = names.find((name) => /syllabus|강의계획|강의계획서/i.test(name)) || names[0];
+  return preferred
+    .replace(/syllabus/ig, "")
+    .replace(/spring|summer|fall|winter/ig, "")
+    .replace(/20\d{2}/g, "")
+    .replace(/[A-Z]{2,}\d{3,5}/g, "")
+    .replace(/[()[\]{}]/g, " ")
+    .replace(/[_\-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 40);
+}
+
+function inferCourseNameFromAgents() {
+  if (!Array.isArray(agents) || !agents.length) return "";
+  const first = agents[0];
+  const seed = (first.name || first.role || "").trim();
+  return seed.slice(0, 30);
+}
+
+function sanitizeFilename(text) {
+  return (text || "")
+    .normalize("NFKD")
+    .replace(/[^\w\s.-가-힣]/g, "")
+    .replace(/\s+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 60);
+}
+
+function buildAgentsFilename() {
+  const base = sanitizeFilename(currentCourseName || inferCourseNameFromAgents() || "course");
+  return `${base}_ta-agents.json`;
 }
 
 // ─── 화면 전환 ────────────────────────────────────────────────────────────────
@@ -179,6 +225,7 @@ async function runGenerate() {
     const data = await res.json();
     sessionId = data.session_id;
     agents = data.agents;
+    currentCourseName = inferCourseNameFromFiles(selectedFiles);
     saveSessionLocally();
 
     showPreview();
@@ -297,6 +344,7 @@ function resetToUpload() {
   if (isStreaming) return;
   sessionId = null;
   agents = [];
+  currentCourseName = "";
   selectedFiles = [];
   renderFileList();
   document.getElementById("generate-btn").disabled = true;
@@ -401,6 +449,7 @@ async function sendMessage() {
   const cursor = document.createElement("span");
   cursor.className = "cursor";
   bubbleEl.appendChild(cursor);
+  let assistantRawText = "";
 
   try {
     let response = await fetch("/chat", {
@@ -415,11 +464,13 @@ async function sendMessage() {
 
     if (!response.ok) {
       if (response.status === 404) {
-        bubbleEl.textContent = "세션 재연결 중...";
+        assistantRawText = "세션 재연결 중...";
+        renderAgentMessageContent(bubbleEl, assistantRawText, cursor);
         const recovered = await tryRecoverSession();
         if (recovered) {
           // 새 세션으로 같은 메시지 재전송
-          bubbleEl.textContent = "";
+          assistantRawText = "";
+          renderAgentMessageContent(bubbleEl, assistantRawText, cursor);
           const retryRes = await fetch("/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -428,17 +479,20 @@ async function sendMessage() {
           if (retryRes.ok) {
             response = retryRes;
           } else {
-            bubbleEl.textContent = "세션 재연결에 실패했습니다. PDF를 다시 업로드해 주세요.";
+            assistantRawText = "세션 재연결에 실패했습니다. PDF를 다시 업로드해 주세요.";
+            renderAgentMessageContent(bubbleEl, assistantRawText, cursor);
             return;
           }
         } else {
-          bubbleEl.textContent = "세션이 만료되었습니다. PDF를 다시 업로드해 주세요.";
+          assistantRawText = "세션이 만료되었습니다. PDF를 다시 업로드해 주세요.";
+          renderAgentMessageContent(bubbleEl, assistantRawText, cursor);
           return;
         }
       } else {
         let errMsg = "알 수 없는 오류";
         try { const err = await response.json(); errMsg = err.detail || errMsg; } catch { errMsg = await response.text().catch(() => errMsg); }
-        bubbleEl.textContent = `오류: ${errMsg}`;
+        assistantRawText = `오류: ${errMsg}`;
+        renderAgentMessageContent(bubbleEl, assistantRawText, cursor);
         return;
       }
     }
@@ -460,22 +514,23 @@ async function sendMessage() {
         try {
           const data = JSON.parse(line.slice(6));
           if (data.type === "chunk") {
-            const textNode = document.createTextNode(data.text);
-            bubbleEl.insertBefore(textNode, cursor);
+            assistantRawText += data.text;
+            renderAgentMessageContent(bubbleEl, assistantRawText, cursor);
             scrollToBottom();
           } else if (data.type === "error") {
-            const errNode = document.createTextNode(`\n[오류: ${data.message}]`);
-            bubbleEl.insertBefore(errNode, cursor);
+            assistantRawText += `\n\n[오류: ${data.message}]`;
+            renderAgentMessageContent(bubbleEl, assistantRawText, cursor);
           }
         } catch (_) {}
       }
     }
   } catch (err) {
-    const errNode = document.createTextNode(`[연결 오류: ${err.message}]`);
-    bubbleEl.insertBefore(errNode, cursor);
+    assistantRawText += `[연결 오류: ${err.message}]`;
+    renderAgentMessageContent(bubbleEl, assistantRawText, cursor);
   } finally {
     const c = bubbleEl.querySelector(".cursor");
     if (c) c.remove();
+    renderAgentMessageContent(bubbleEl, assistantRawText, null);
 
     isStreaming = false;
     input.disabled = false;
@@ -537,7 +592,7 @@ function appendAgentMessage(agent) {
         <span class="message-name" style="color:${agent.color}">${escapeHtml(agent.name)}</span>
         <span class="message-role">${escapeHtml(agent.role)}</span>
       </div>
-      <div class="message-bubble" style="--bubble-color:${agent.color}"></div>
+      <div class="message-bubble agent-bubble" style="--bubble-color:${agent.color}"></div>
     </div>
   `;
   container.appendChild(msg);
@@ -573,14 +628,32 @@ function escapeHtml(text) {
     .replace(/'/g, "&#39;");
 }
 
+function formatAssistantText(rawText) {
+  let safe = escapeHtml(rawText || "");
+  safe = safe.replace(/\*\*(.+?)\*\*/gs, "<strong>$1</strong>");
+  safe = safe.replace(/__(.+?)__/gs, "<strong>$1</strong>");
+  const parts = safe.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  if (!parts.length) return "";
+  return parts.map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`).join("");
+}
+
+function renderAgentMessageContent(bubbleEl, rawText, cursorEl) {
+  bubbleEl.innerHTML = formatAssistantText(rawText);
+  if (cursorEl) bubbleEl.appendChild(cursorEl);
+}
+
 // ─── 에이전트 저장 ─────────────────────────────────────────────────────────────
 function saveAgents() {
-  const data = JSON.stringify({ agents }, null, 2);
+  const payload = {
+    course_name: currentCourseName || inferCourseNameFromAgents() || "",
+    agents,
+  };
+  const data = JSON.stringify(payload, null, 2);
   const blob = new Blob([data], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "ta-agents.json";
+  a.download = buildAgentsFilename();
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -615,6 +688,7 @@ function initLoadAgents() {
       const result = await res.json();
       sessionId = result.session_id;
       agents = result.agents;
+      currentCourseName = (data.course_name || inferCourseNameFromAgents() || "").trim();
       saveSessionLocally();
       showPreview();
     } catch (err) {

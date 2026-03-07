@@ -612,6 +612,23 @@ main {
   white-space: pre-wrap;
 }
 
+.agent-bubble {
+  white-space: normal;
+}
+
+.agent-bubble p {
+  margin: 0 0 10px 0;
+}
+
+.agent-bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.agent-bubble strong {
+  font-weight: 700;
+  color: #e8eefc;
+}
+
 .user-message .message-bubble {
   background: #1e2d4a;
   border-left: none;
