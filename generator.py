@@ -97,6 +97,90 @@ _SYSTEM_PROMPT_FOR_GENERATOR = """\
 """
 
 
+def _strip_code_fences(text: str) -> str:
+    text = re.sub(r"```(?:json)?\s*", "", text)
+    text = re.sub(r"```\s*$", "", text)
+    return text.strip()
+
+
+def _extract_first_json_array(text: str) -> str:
+    """문자열에서 첫 JSON 배열 구간([ ... ])을 안전하게 추출."""
+    start = text.find("[")
+    if start < 0:
+        return ""
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(text[start:], start=start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == "\"":
+                in_string = False
+            continue
+
+        if ch == "\"":
+            in_string = True
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+
+    return ""
+
+
+def _normalize_json_text(text: str) -> str:
+    """LLM 출력에서 자주 나오는 JSON 잡음을 정리."""
+    text = (
+        text.replace("“", "\"")
+        .replace("”", "\"")
+        .replace("’", "'")
+        .replace("‘", "'")
+    )
+    # trailing comma 제거: {"a":1,} / [1,2,]
+    text = re.sub(r",(\s*[}\]])", r"\1", text)
+    return text.strip()
+
+
+def _parse_agents_json(raw_text: str) -> list[dict]:
+    """LLM 원문에서 에이전트 JSON 배열을 최대한 복구해 파싱."""
+    candidates: list[str] = []
+
+    cleaned = _strip_code_fences(raw_text)
+    if cleaned:
+        candidates.append(cleaned)
+
+    extracted = _extract_first_json_array(cleaned)
+    if extracted:
+        candidates.append(extracted)
+
+    normalized_candidates: list[str] = []
+    for c in candidates:
+        normalized_candidates.append(c)
+        nc = _normalize_json_text(c)
+        if nc != c:
+            normalized_candidates.append(nc)
+
+    last_err = "empty candidates"
+    for cand in normalized_candidates:
+        try:
+            parsed = json.loads(cand)
+            if isinstance(parsed, dict) and isinstance(parsed.get("agents"), list):
+                parsed = parsed["agents"]
+            if isinstance(parsed, list):
+                return parsed
+            last_err = f"parsed type is {type(parsed).__name__}"
+        except Exception as e:
+            last_err = str(e)
+
+    raise ValueError(last_err)
+
+
 async def generate_agents(pdf_pages: list[PageData]) -> list[dict]:
     """
     PDF 페이지 목록을 분석하여 2~4개 에이전트 정의 반환
@@ -119,7 +203,8 @@ async def generate_agents(pdf_pages: list[PageData]) -> list[dict]:
                 config=types.GenerateContentConfig(
                     system_instruction=_SYSTEM_PROMPT_FOR_GENERATOR,
                     max_output_tokens=4096,
-                    temperature=0.6,
+                    temperature=0.3,
+                    response_mime_type="application/json",
                 ),
             )
             # 토큰 로깅
@@ -145,17 +230,27 @@ async def generate_agents(pdf_pages: list[PageData]) -> list[dict]:
             detail="API 한도가 초과되었습니다. 잠시 후 다시 시도해주세요."
         )
 
-    raw = response.text or "[]"
-
-    # JSON 파싱 전처리: 코드 블록 제거
-    raw = re.sub(r"```(?:json)?\s*", "", raw)
-    raw = re.sub(r"```\s*$", "", raw)
-    raw = raw.strip()
-
     try:
-        agents = json.loads(raw)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="에이전트 JSON 파싱 실패. 다시 시도해주세요.")
+        agents = _parse_agents_json(response.text or "")
+    except Exception:
+        # 1회 교정 시도: 깨진 JSON 텍스트를 모델로 다시 정규화
+        try:
+            repair_prompt = (
+                "다음 텍스트를 JSON 배열로만 교정하세요. 설명 문장 없이 JSON만 출력하세요.\n\n"
+                f"{response.text or ''}"
+            )
+            repaired = await client.aio.models.generate_content(
+                model=MODEL,
+                contents=repair_prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=4096,
+                    temperature=0.0,
+                    response_mime_type="application/json",
+                ),
+            )
+            agents = _parse_agents_json(repaired.text or "")
+        except Exception:
+            raise HTTPException(status_code=500, detail="에이전트 JSON 파싱 실패. 다시 시도해주세요.")
 
     # 아바타/색상 할당 + CJK 문자 제거 (이름/역할에 중국어 등 혼입 방지)
     _cjk_pat = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff]")
