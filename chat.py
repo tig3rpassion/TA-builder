@@ -125,6 +125,16 @@ def _cleanup_artifacts(text: str) -> str:
     return text
 
 
+def _looks_truncated(text: str) -> bool:
+    """문장 중간에서 끊긴 응답인지 휴리스틱으로 판별."""
+    t = (text or "").strip()
+    if len(t) < 45:
+        return False
+    if re.search(r"[.!?…]$|다\.$|요\.$|니다\.$|습니다\.$", t):
+        return False
+    return bool(re.search(r"[가-힣A-Za-z0-9]$", t))
+
+
 def _build_citation_footer(rag_pages: list[PageData]) -> str:
     """응답 말미에 붙일 근거 자료 목록 생성."""
     if not rag_pages:
@@ -378,6 +388,7 @@ async def stream_chat(
     system_prompt = _build_system_prompt(agent)
 
     raw_chunks: list[str] = []
+    stream_completed = False
 
     for attempt in range(3):
         try:
@@ -387,7 +398,7 @@ async def stream_chat(
                 contents=all_contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt,
-                    max_output_tokens=2048,
+                    max_output_tokens=3072,
                     temperature=0.7,
                     top_p=0.8,
                 ),
@@ -410,6 +421,7 @@ async def stream_chat(
                     )
             except Exception:
                 pass
+            stream_completed = True
             break
 
         except Exception as e:
@@ -424,6 +436,42 @@ async def stream_chat(
             else:
                 yield f"\n\n[오류: {err[:120]}]"
             break
+
+    # 정상 종료됐지만 문장 중간에서 끊긴 경우, 1회 자동 이어쓰기
+    partial_text = _cleanup_artifacts("".join(raw_chunks))
+    if stream_completed and _looks_truncated(partial_text):
+        try:
+            continuation_contents = all_contents + [
+                types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(text=partial_text)],
+                ),
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(
+                        text="직전 답변이 문장 중간에서 끊겼습니다. "
+                        "중복 없이 바로 이어서 완결된 2~4문장으로 마무리해주세요."
+                    )],
+                ),
+            ]
+            cont = await client.aio.models.generate_content(
+                model=MODEL,
+                contents=continuation_contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    max_output_tokens=512,
+                    temperature=0.4,
+                    top_p=0.8,
+                ),
+            )
+            cont_text = _strip_cjk(cont.text or "").strip()
+            if cont_text:
+                if not partial_text.endswith(("\n", " ")):
+                    cont_text = "\n" + cont_text
+                raw_chunks.append(cont_text)
+                yield cont_text
+        except Exception:
+            pass
 
     answer_text = _cleanup_artifacts("".join(raw_chunks))
     citation_footer = _build_citation_footer(rag_pages)
