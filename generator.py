@@ -62,7 +62,7 @@ def extract_page_image(pdf_bytes: bytes, page_num: int, dpi: int = 150) -> bytes
 
 _SYSTEM_PROMPT_FOR_GENERATOR = """\
 당신은 연세대학교 수업 조교 에이전트를 설계하는 전문가입니다.
-강의계획서/강의안 텍스트를 분석하여 학생에게 가장 유용한 2~4개의 조교 에이전트를 설계합니다.
+강의계획서/강의안 텍스트를 분석하여 학생에게 가장 유용한 3~4개의 조교 에이전트를 설계합니다.
 
 출력 형식: 반드시 아래 JSON 배열만 출력하세요. 다른 텍스트 없이.
 [
@@ -94,6 +94,10 @@ _SYSTEM_PROMPT_FOR_GENERATOR = """\
    h) 범위 외 질문 처리: 수업 내용과 무관한 질문은 정중히 안내 후 수업 관련 질문으로 유도
 3. id는 "agent-1", "agent-2" 등 순서대로
 4. 각 에이전트의 system_prompt는 서로 중복 없이 상호 보완적으로 설계할 것
+5. 아래 3개 역할은 반드시 포함할 것:
+   - 개념 설명 에이전트
+   - 과제/프로젝트 코칭 에이전트
+   - 시험 준비/복습 에이전트
 """
 
 
@@ -181,9 +185,85 @@ def _parse_agents_json(raw_text: str) -> list[dict]:
     raise ValueError(last_err)
 
 
+def _generic_system_prompt(role_name: str, course_hint: str) -> str:
+    return (
+        "당신은 이 수업의 전문 조교입니다. 강의 자료를 완벽히 숙지하고 있으며, "
+        "학생들이 스스로 학습할 수 있도록 돕습니다. "
+        f"당신의 전담 역할은 {role_name}입니다. "
+        f"수업 맥락: {course_hint}. "
+        "답변 시 반드시 강의 자료 페이지를 근거로 제시하고, "
+        "학생의 질문 의도를 먼저 2~3문장으로 확인한 뒤 핵심만 간결하게 설명합니다. "
+        "처음 배우는 학생도 이해할 수 있도록 예시를 포함하고, "
+        "수업 범위를 벗어난 질문은 정중히 범위 내 질문으로 유도합니다. "
+        "전문용어는 한국어(English) 병기로 제시합니다."
+    )
+
+
+def _ensure_default_agent_types(agents: list[dict], pdf_pages: list[PageData]) -> list[dict]:
+    """개념/과제/시험 3종 에이전트가 항상 존재하도록 보정."""
+    course_hint = pdf_pages[0].filename if pdf_pages else "해당 강의"
+
+    required = [
+        {
+            "key": "concept",
+            "name": "개념 설명 조교",
+            "role": "핵심 개념 설명",
+            "description": "강의의 핵심 개념, 용어, 원리를 설명합니다.",
+            "keywords": ("개념", "이론", "용어", "원리"),
+        },
+        {
+            "key": "assignment",
+            "name": "과제 코칭 조교",
+            "role": "과제·프로젝트 코칭",
+            "description": "과제 요구사항 해석, 진행 전략, 작성 방향을 도와줍니다.",
+            "keywords": ("과제", "프로젝트", "실습", "리포트"),
+        },
+        {
+            "key": "exam",
+            "name": "시험 대비 조교",
+            "role": "시험 준비·복습",
+            "description": "시험 범위 정리, 복습 포인트, 예상 질문 점검을 돕습니다.",
+            "keywords": ("시험", "중간", "기말", "복습", "대비"),
+        },
+    ]
+
+    normalized = []
+    for agent in agents:
+        if not isinstance(agent, dict):
+            continue
+        normalized.append(agent)
+
+    existing_texts = [
+        " ".join([
+            str(a.get("name", "")),
+            str(a.get("role", "")),
+            str(a.get("description", "")),
+            str(a.get("system_prompt", "")),
+        ]).lower()
+        for a in normalized
+    ]
+
+    for spec in required:
+        found = any(any(k in text for k in spec["keywords"]) for text in existing_texts)
+        if found:
+            continue
+        normalized.append(
+            {
+                "id": "",
+                "name": spec["name"],
+                "role": spec["role"],
+                "description": spec["description"],
+                "system_prompt": _generic_system_prompt(spec["role"], course_hint),
+            }
+        )
+        existing_texts.append(" ".join(spec["keywords"]))
+
+    return normalized
+
+
 async def generate_agents(pdf_pages: list[PageData]) -> list[dict]:
     """
-    PDF 페이지 목록을 분석하여 2~4개 에이전트 정의 반환
+    PDF 페이지 목록을 분석하여 3개 이상 에이전트 정의 반환
     반환: [{"id", "name", "role", "avatar", "color", "description", "system_prompt"}, ...]
     """
     # 에이전트 생성용 텍스트: 전체 합산 16000자 제한
@@ -252,9 +332,13 @@ async def generate_agents(pdf_pages: list[PageData]) -> list[dict]:
         except Exception:
             raise HTTPException(status_code=500, detail="에이전트 JSON 파싱 실패. 다시 시도해주세요.")
 
+    # 기본 3종(개념/과제/시험) 보장
+    agents = _ensure_default_agent_types(agents, pdf_pages)
+
     # 아바타/색상 할당 + CJK 문자 제거 (이름/역할에 중국어 등 혼입 방지)
     _cjk_pat = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff]")
     for i, agent in enumerate(agents):
+        agent["id"] = f"agent-{i + 1}"
         agent["avatar"] = AVATAR_POOL[i % len(AVATAR_POOL)]
         agent["color"] = COLOR_POOL[i % len(COLOR_POOL)]
         agent["name"] = _cjk_pat.sub("", agent.get("name", "")).strip()

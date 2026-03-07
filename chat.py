@@ -125,6 +125,23 @@ def _cleanup_artifacts(text: str) -> str:
     return text
 
 
+def _build_citation_footer(rag_pages: list[PageData]) -> str:
+    """응답 말미에 붙일 근거 자료 목록 생성."""
+    if not rag_pages:
+        return "\n\n근거 자료\n- 관련 페이지를 찾지 못했습니다."
+
+    seen = set()
+    ordered_sources: list[str] = []
+    for page in rag_pages:
+        src = page.source.strip()
+        if src and src not in seen:
+            seen.add(src)
+            ordered_sources.append(src)
+
+    lines = ["근거 자료"] + [f"- {src}" for src in ordered_sources]
+    return "\n\n" + "\n".join(lines)
+
+
 MAX_HISTORY = 20
 
 # 세션 저장소
@@ -337,7 +354,13 @@ async def stream_chat(
                 yield f"\n\n[오류: {err[:120]}]"
             break
 
-    history.append({"role": "assistant", "content": _cleanup_artifacts("".join(raw_chunks))})
+    answer_text = _cleanup_artifacts("".join(raw_chunks))
+    citation_footer = _build_citation_footer(rag_pages)
+    if citation_footer:
+        yield citation_footer
+        answer_text += citation_footer
+
+    history.append({"role": "assistant", "content": answer_text})
     _persist()
 
 
