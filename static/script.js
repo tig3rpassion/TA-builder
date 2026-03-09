@@ -58,6 +58,26 @@ function showToast(msg) {
   }, 4000);
 }
 
+async function fetchWithRetry(url, options = {}, retries = 2, baseDelayMs = 1000) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fetch(url, options);
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= retries) break;
+      const delay = baseDelayMs * (attempt + 1);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  const msg = (lastErr && lastErr.message) ? lastErr.message : "네트워크 요청 실패";
+  if (/failed to fetch/i.test(msg)) {
+    throw new Error("네트워크 연결이 불안정합니다. 잠시 후 다시 시도해 주세요.");
+  }
+  throw new Error(msg);
+}
+
 function inferCourseNameFromFiles(files) {
   if (!Array.isArray(files) || files.length === 0) return "";
   const names = files.map((f) => (f && f.name ? f.name : ""))
@@ -214,7 +234,7 @@ async function runGenerate() {
 
   try {
     statusText.textContent = "AI가 에이전트를 설계하는 중...";
-    const res = await fetch("/generate", { method: "POST", body: formData });
+    const res = await fetchWithRetry("/generate", { method: "POST", body: formData }, 2, 1200);
 
     if (!res.ok) {
       let errMsg = "생성 실패";
@@ -452,7 +472,7 @@ async function sendMessage() {
   let assistantRawText = "";
 
   try {
-    let response = await fetch("/chat", {
+    let response = await fetchWithRetry("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -460,7 +480,7 @@ async function sendMessage() {
         agent_id: selectedAgentId,
         message,
       }),
-    });
+    }, 1, 1000);
 
     if (!response.ok) {
       if (response.status === 404) {
@@ -471,11 +491,11 @@ async function sendMessage() {
           // 새 세션으로 같은 메시지 재전송
           assistantRawText = "";
           renderAgentMessageContent(bubbleEl, assistantRawText, cursor);
-          const retryRes = await fetch("/chat", {
+          const retryRes = await fetchWithRetry("/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ session_id: sessionId, agent_id: selectedAgentId, message }),
-          });
+          }, 1, 800);
           if (retryRes.ok) {
             response = retryRes;
           } else {
@@ -716,10 +736,10 @@ function initAddMaterial() {
     for (const f of files) formData.append("files", f);
 
     try {
-      const res = await fetch(`/add-material/${sessionId}`, {
+      const res = await fetchWithRetry(`/add-material/${sessionId}`, {
         method: "POST",
         body: formData,
-      });
+      }, 2, 1200);
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.detail || "자료 추가 실패");
